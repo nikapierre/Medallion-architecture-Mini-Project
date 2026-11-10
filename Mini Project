@@ -1,0 +1,196 @@
+--MINI PROJECT (BRONZE, SILVER, GOLD)
+
+--Bronze
+--Create Table
+create table BRONZE_NP(
+"Order ID" varchar
+,"Order Date" varchar
+,"Ship Date" varchar
+,"Customer ID" varchar
+,"Country/Region" varchar
+,CITY varchar
+,STATE varchar
+,SALES double
+,QUANTITY int
+,PROFIT double
+);
+
+-- INSERT DATA TO TABLE
+INSERT INTO BRONZE_NP
+SELECT * FROM INGEST_SUPERSTORE_ORDERS;
+
+-- INSERT LOADED_AT COLUMN
+alter table BRONZE_NP
+add column LOADED_AT TIMESTAMP;
+UPDATE BRONZE_NP 
+SET LOADED_AT = CURRENT_TIMESTAMP();
+
+SELECT *
+FROM BRONZE_NP;
+
+-- SELECT *
+-- FROM INGEST_SUPERSTORE_ORDERS;
+------------------------------------------------------------------------------------------------------------------------------------------------
+--SILVER
+--Create Table (from Bronze)
+create table SILVER_NP as (
+    SELECT *
+    FROM BRONZE_NP
+);
+--CONVERT ORDER and SHIP DATE TO DATES
+update SILVER_NP
+set "Order Date" = TO_DATE("Order Date",'dd/MM/YYYY'); -- convert string to date
+ALTER TABLE SILVER_NP RENAME COLUMN "Order Date" TO "Order Date String"; -- rename order date to archive
+ALTER table SILVER_NP add column "Order Date" DATE;
+update SILVER_NP set "Order Date" = "Order Date String";
+
+update SILVER_NP
+set "Ship Date" = TO_DATE("Ship Date",'dd/MM/YYYY'); -- convert string to date
+ALTER TABLE SILVER_NP RENAME COLUMN "Ship Date" TO "Ship Date String"; -- rename order date to archive
+ALTER table SILVER_NP add column "Ship Date" DATE;
+update SILVER_NP set "Ship Date" = "Ship Date String";
+
+-- Rename all headers to snake case
+ALTER TABLE SILVER_NP RENAME COLUMN "Order ID" TO order_id;
+ALTER TABLE SILVER_NP RENAME COLUMN "Order Date" TO order_date;
+ALTER TABLE SILVER_NP RENAME COLUMN "Ship Date" TO ship_date;
+ALTER TABLE SILVER_NP RENAME COLUMN "Customer ID" TO customer_id;
+ALTER TABLE SILVER_NP RENAME COLUMN "Country/Region" TO "country/region";
+ALTER TABLE SILVER_NP RENAME COLUMN CITY TO city;
+ALTER TABLE SILVER_NP RENAME COLUMN STATE TO state;
+ALTER TABLE SILVER_NP RENAME COLUMN SALES TO sales;
+ALTER TABLE SILVER_NP RENAME COLUMN QUANTITY TO quantity;
+ALTER TABLE SILVER_NP RENAME COLUMN PROFIT TO profit;
+
+--ROUND SALES AND PROFIT to 2.dp
+UPDATE SILVER_NP SET sales = ROUND(sales,2);
+UPDATE SILVER_NP SET profit = ROUND(profit,2);
+
+-- DROP ROWS WHERE order_id=null OR order_date=null (THERE WERE NONE)
+Delete
+FROM TABLE_NP
+WHERE order_id=null;
+
+-- ADDD DAYS TO SHIP, ORDER YEAR, ORDER MONTH, PROFIT_MARGIN
+create table SILVER1_NP as (
+
+SELECT
+order_id
+,order_date
+,YEAR(order_date) as order_year
+,MONTHNAME(order_date) as order_month
+,ship_date
+,DATEDIFF('days',order_date,ship_date) as days_to_ship
+,customer_id
+,"country/region"
+,city
+,TRIM(state) as state
+,sales
+,quantity
+,profit
+,ROUND(profit/sales,2) as profit_margin
+,loaded_at
+FROM SILVER_NP
+);
+-- drop to recreate again
+drop table SILVER1_NP;
+
+-- Remove Duplicates
+create table SILVER1_NP as (
+SELECT
+order_id
+,order_date
+,YEAR(order_date) as order_year
+,MONTHNAME(order_date) as order_month
+,ship_date
+,DATEDIFF('days',order_date,ship_date) as days_to_ship
+,customer_id
+,"country/region"
+,city
+,TRIM(state) as state
+,sales
+,quantity
+,profit
+,ROUND(profit/sales,2) as profit_margin
+,loaded_at
+FROM SILVER_NP
+qualify ROW_NUMBER() OVER (PARTITION BY order_id, order_date, order_year, order_month, ship_date, days_to_ship, customer_id, "country/region", city, state, sales, quantity, profit , profit_margin ORDER BY loaded_at) =1);
+
+SELECT*
+FROM SILVER1_NP;
+
+----------------------------------------------------------------------------------------------------------------------------------------
+
+--GOLD
+
+-- Monthly State Sales
+create table GOLD_MONTHLY_STATE_SALES_NP as(
+
+WITH sales_profit AS(
+select
+"country/region"
+,state
+,order_year
+,order_month
+,ROUND(sum(profit)/sum(sales),2) as total_profit_margin
+FROM SILVER1_NP
+group by all
+)
+
+SELECT
+S."country/region"
+,S.state
+,S.order_year
+,S.order_month
+,count(distinct order_id) as distinct_orders
+,sum(quantity) as total_quantity
+,sum(sales) as total_sales
+,sum(profit) as total_profit
+,ROUND(AVG(days_to_ship),0) as avg_days_to_ship
+FROM SILVER1_NP S
+INNER JOIN sales_profit SP
+ON S."country/region"=SP."country/region"
+AND S.state=SP.state
+AND S.order_year=SP.order_year
+AND S.order_month=SP.order_month
+group by all
+);
+
+SELECT *
+FROM GOLD_MONTHLY_STATE_SALES_NP;
+
+--- Customer Summary
+create table Customer_Summary_NP as(
+WITH o_dates AS (
+SELECT
+customer_id
+,MIN(order_date) as first_order_date
+,MAX(order_date) as last_order_date
+FROM SILVER1_NP
+group by all
+)
+, order_val AS(
+select
+customer_id
+,ROUND(sum(sales)/count(distinct order_id),2) as avg_order_value
+FROM SILVER1_NP
+group by all
+)
+SELECT
+S.customer_id
+,OD.first_order_date
+,OD.last_order_date
+,sum(S.quantity) as total_quantity
+,sum(S.sales) as total_sales
+,sum(S.profit) as total_profit
+,OV.avg_order_value
+,rank() over ( order by total_sales desc) as customer_rank
+FROM SILVER1_NP S
+INNER JOIN order_val OV
+ON S.CUSTOMER_ID=OV.customer_ID
+INNER JOIN o_dates OD
+ON S.CUSTOMER_ID=OD.CUSTOMER_ID
+group by all);
+
+SELECT *
+FROM Customer_Summary_NP;
