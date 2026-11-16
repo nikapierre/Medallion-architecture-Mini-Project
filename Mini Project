@@ -159,7 +159,7 @@ group by all
 SELECT *
 FROM GOLD_MONTHLY_STATE_SALES_NP;
 
---- Customer Summary
+---- Customer Summary
 create table Customer_Summary_NP as(
 WITH o_dates AS (
 SELECT
